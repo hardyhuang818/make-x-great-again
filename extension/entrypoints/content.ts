@@ -35,7 +35,7 @@ function articleOf(node: Element | null): HTMLElement | null {
 
 /** User-facing verb for the configured action mode. */
 function actionVerb(mode: ActionMode): string {
-  return mode === "block" ? "拉黑" : mode === "mute" ? "静音" : "隐藏";
+  return mode === "block" ? "屏蔽" : mode === "mute" ? "静音" : "隐藏";
 }
 
 /** Fire X's native mute/block (best-effort, paced) with one retry. The local

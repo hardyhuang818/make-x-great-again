@@ -187,11 +187,11 @@ export interface BubbleHandlers {
 }
 
 /** Collapsed pill ⇄ expanded card. Default resting state = pill.
- *  `verb` is the action label (隐藏 / 静音 / 拉黑) per settings.actionMode. */
+ *  `verb` is the action label (屏蔽 / 静音 / 隐藏) per settings.actionMode. */
 export function createBubble(
   h: BubbleHandlers,
   pos: "tr" | "br" = "tr",
-  verb = "隐藏",
+  verb = "屏蔽",
 ) {
   const root = document.createElement("div");
   root.className = `xss xss-bubble${pos === "br" ? " br" : ""}`;
@@ -381,7 +381,7 @@ export function createBadge(
   a: BadgeActions,
   note?: string,
   source: BadgeSource = "fresh",
-  verb = "隐藏",
+  verb = "屏蔽",
 ): HTMLElement {
   const el = document.createElement("span");
   el.tabIndex = 0;

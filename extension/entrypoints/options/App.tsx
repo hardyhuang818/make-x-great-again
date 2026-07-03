@@ -303,7 +303,7 @@ function Overview() {
       <div className="mb-8 grid grid-cols-4 gap-px overflow-hidden rounded-lg border border-border bg-border">
         <Card n={s.detections} l="AI 检测总数" />
         <Card n={s.cacheHits} l="缓存命中 · 省下的 LLM 调用" />
-        <Card n={bl} l="已隐藏账号" />
+        <Card n={bl} l="已处理账号" />
         <Card n={(d.spam ?? 0) + (d.porn_bot ?? 0)} l="判定为垃圾/色情bot" />
       </div>
       <SectionH>检测类别分布</SectionH>
@@ -360,8 +360,8 @@ function Blocklist() {
   };
   return (
     <Page
-      title="隐藏记录"
-      sub={`共 ${list.length} 条 · 取消隐藏用于纠正误判（账号会重新可见）`}
+      title="处理记录"
+      sub={`共 ${list.length} 条 · 取消记录用于纠正误判；如已执行 X 屏蔽，需要在 X 里解除屏蔽`}
     >
       <input
         value={q}
@@ -430,7 +430,7 @@ function Blocklist() {
                       load();
                     }}
                   >
-                    取消隐藏
+                    取消记录
                   </Btn>
                 </td>
               </tr>
@@ -438,7 +438,7 @@ function Blocklist() {
           </tbody>
         </table>
       </div>
-      {!list.length && <div className="py-10 text-center text-fg-3">还没有隐藏记录</div>}
+      {!list.length && <div className="py-10 text-center text-fg-3">还没有处理记录</div>}
     </Page>
   );
 }
@@ -555,8 +555,8 @@ const ACTION_MODES: {
 }[] = [
   {
     value: "local",
-    label: "本地隐藏（推荐）",
-    hint: "只在本扩展里隐藏 ta 的推文，X 完全无感、零联网，可随时在「隐藏记录」里恢复。",
+    label: "本地隐藏",
+    hint: "只在本扩展里隐藏 ta 的推文，X 完全无感、零联网，可随时在「处理记录」里恢复。",
     needsX: false,
   },
   {
@@ -567,8 +567,8 @@ const ACTION_MODES: {
   },
   {
     value: "block",
-    label: "X 拉黑",
-    hint: "用你的 X 登录态调用 X 原生屏蔽：互相看不到、解除关注，最强。需要授权访问 x.com。高频批量拉黑可能触发 X 风控，请分批少量处理。",
+    label: "X 屏蔽（默认）",
+    hint: "用你的 X 登录态调用 X 原生屏蔽/拉黑：互相看不到、解除关注，最强。需要授权访问 x.com。高频批量屏蔽可能触发 X 风控，请分批少量处理。",
     needsX: true,
   },
 ];
@@ -633,8 +633,8 @@ function Settings() {
           <section>
             <SectionH>处理方式</SectionH>
             <p className="mb-3 text-[12px] text-fg-3">
-              点击「隐藏」按钮时，对识别出的垃圾号默认执行哪种处理。默认仅本地隐藏（零联网）；
-              选择 X 静音 / 拉黑会用你当前的 X 登录态调用 X 自家接口，不经过我们的服务器。
+              点击处理按钮时，对识别出的垃圾号默认执行哪种处理。默认使用 X 原生屏蔽；
+              选择 X 静音 / 屏蔽会用你当前的 X 登录态调用 X 自家接口，不经过我们的服务器。
             </p>
             <div className="space-y-2">
               {ACTION_MODES.map((m) => {
@@ -667,7 +667,7 @@ function Settings() {
             </div>
             {permDenied && (
               <p className="mt-2 text-[12px] text-danger">
-                未授权访问 x.com，已保持当前处理方式。X 静音 / 拉黑需要该权限才能调用 X 接口。
+                未授权访问 x.com，已保持当前处理方式。X 静音 / 屏蔽需要该权限才能调用 X 接口。
               </p>
             )}
           </section>
@@ -676,7 +676,7 @@ function Settings() {
         <section>
           <SectionH>数据与隐私</SectionH>
           <p className="mb-3 text-[13px] text-fg-2">
-            检测缓存、隐藏记录、统计均仅存于本机；除公开 X 数字 ID 外不存 PII。
+            检测缓存、处理记录、统计均仅存于本机；除公开 X 数字 ID 外不存 PII。
           </p>
           <div className="flex items-center gap-3">
             <Btn tier="danger" onClick={() => setClearOpen(true)}>
@@ -694,7 +694,7 @@ function Settings() {
               这会清空本机上的：
               <ul className="my-2 list-inside list-disc text-fg-3">
                 <li>本地检测缓存</li>
-                <li>你的隐藏历史 + 本地处理统计</li>
+                <li>你的处理历史 + 本地处理统计</li>
               </ul>
               <b className="text-fg">不可恢复。</b>
             </>
@@ -717,7 +717,7 @@ const About = () => (
   <Page title="关于" sub={`${BRAND.name} · 公益、开源`}>
     <div className="max-w-[680px] space-y-4 text-[13px] leading-7 text-fg-2">
       <p>
-        X(Twitter) 反垃圾 / 色情机器人扩展。被动检测、名单随扩展打包：默认「本地隐藏」模式零远程请求，不经过任何服务器。如在「设置 → 处理方式」里选择 X 静音 / 拉黑，则会用你当前的 X 登录态调用 X 自家接口对账号生效（仍不经过我们的服务器、不收集任何数据）。
+        X(Twitter) 反垃圾 / 色情机器人扩展。被动检测、名单随扩展打包：默认使用 X 原生屏蔽，用你当前的 X 登录态调用 X 自家接口对账号生效（仍不经过我们的服务器、不收集任何数据）。也可以在「设置 → 处理方式」里改为 X 静音或本地隐藏。
       </p>
       <div className="grid grid-cols-1 gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-2">
         <div className="bg-bg p-4">
@@ -782,7 +782,7 @@ const Mascot = () => (
 
 const TABS = [
   ["overview", "概览", Overview],
-  ["blocklist", "隐藏记录", Blocklist],
+  ["blocklist", "处理记录", Blocklist],
   ["cache", "检测缓存", Cache],
   ["settings", "设置", Settings],
   ["about", "关于", About],

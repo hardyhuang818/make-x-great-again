@@ -1,6 +1,6 @@
 // First-party X account actions (mute / block) driven by the user's own
-// logged-in session. Used ONLY when the user opts into "X 静音" or "X 拉黑"
-// mode (settings.actionMode); the default "local" mode never calls this.
+// logged-in session. Used when the user uses "X 静音" or "X 屏蔽"
+// mode (settings.actionMode); the "local" mode never calls this.
 //
 // We call X's own legacy v1.1 endpoints — the same ones x.com's web client
 // uses — with the page's `ct0` CSRF cookie + the site's public bearer. No
