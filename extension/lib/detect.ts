@@ -13,7 +13,7 @@ export { ingestGraphqlUsers } from "./graphql-users";
 // separate structural rule below, which catches new template variants
 // without needing dictionary growth.
 const PROMO_RE =
-  /(约见|约炮|附近|同城|牵线|线下|对接|资源|上车|看我主页|入驻|女主播|安全可靠|大号|解锁|福利|楼凤|一夜|加微|私聊|私信|包养|外围|18\+|🔞|🍑|💋|💦|👇|👉)/;
+  /(约见|约炮|真实约见|约见入口|附近|同城|全国1-5线|1-5线|牵线|线下|对接|资源|上车|点我|看我主页|点主页|主页|入口|找炮友|找抱友|找朋友|炮友速配|速配|野站|爱野站|兄妹|入驻|女主播|安全可靠|大号|解锁|福利|楼凤|一夜|加微|私聊|私信|包养|外围|匹配|通道|模特|无偿|女优|人妻|欲仙|女仆|秘书|裸聊|空降|喝茶|伴游|可约|破处|处男|涩播|湿播|准时涩|免费破|免费约|姐姐|妹妹|萝莉|御姐|18\+|🔞|🍑|💋|💦|👇|👉)/;
 const LINK_RE =
   /(https?:\/\/|\b[\w-]+\.(top|xyz|vip|club|icu|cn|cc|live|link|shop)\b|t\.co\/)/i;
 const RANDOM_HANDLE_RE = /^[a-z]{2,}\d{4,}$|^[A-Za-z]+[A-Z][a-z]+\d{4,}$|^[a-z]{1,3}\d{4,}$/;
@@ -26,8 +26,11 @@ const RANDOM_HANDLE_RE = /^[a-z]{2,}\d{4,}$|^[A-Za-z]+[A-Z][a-z]+\d{4,}$|^[a-z]{
 // don't match PROMO_RE. False positives are fine: just means an extra LLM
 // call to ratify, never a wrong verdict.
 const EMOJI_RE = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}]/u;
+const EMOJI_GLOBAL_RE = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}]/gu;
 const HAS_CJK_RE = /[一-鿿]/;
 const HAS_MENTION_RE = /@[A-Za-z0-9_]{2,15}/;
+const BOTANY_LATIN_RE =
+  /\b[A-Z][a-z]{2,}\s*(guineensis|japonica|chinensis|sinensis|reticulata|officinalis|sativa|indica|vulgaris|alba|nigra|rubra|frutescens|militaris|lucidum|grandiflorum|bicolor|annua|edulis|cordata)\b/;
 
 const NON_PROFILE = new Set([
   "home", "explore", "notifications", "messages", "i", "search", "settings",
@@ -495,6 +498,40 @@ export interface Heuristic {
   why: string[];
 }
 
+function emojiCount(s: string): number {
+  return s.match(EMOJI_GLOBAL_RE)?.length ?? 0;
+}
+
+function botanyBaitMatch(s: Signals): boolean {
+  const t = s.recentTweets[0] ?? "";
+  if (!t || t.length > 140 || !HAS_CJK_RE.test(t) || !BOTANY_LATIN_RE.test(t)) {
+    return false;
+  }
+  const profileBlob = `${s.displayName} ${s.bio}`;
+  return PROMO_RE.test(profileBlob) || emojiCount(profileBlob) >= 3;
+}
+
+function strippedEmojiReplyText(s: string): string {
+  return s
+    .replace(EMOJI_GLOBAL_RE, "")
+    .replace(/[\uFE0E\uFE0F\u200D\s\p{P}\p{S}]/gu, "");
+}
+
+function shortEmojiOnlyReply(s: string): boolean {
+  const t = s.trim();
+  return !!t && t.length <= 24 && EMOJI_RE.test(t) && strippedEmojiReplyText(t).length === 0;
+}
+
+function promoNameEmojiReplyMatch(s: Signals): boolean {
+  const t = s.recentTweets[0] ?? "";
+  if (!shortEmojiOnlyReply(t)) return false;
+  return PROMO_RE.test(`${s.displayName} ${s.bio}`);
+}
+
+function explicitPromoDisplayName(s: Signals): boolean {
+  return PROMO_RE.test(s.displayName) && /(约|炮|涩|湿|处|主页|入口|速配|野站|兄妹)/i.test(s.displayName);
+}
+
 /** Cheap & local. Decides WHETHER to spend an LLM call — never the verdict. */
 export function heuristic(s: Signals): Heuristic {
   let score = 0;
@@ -521,6 +558,30 @@ export function heuristic(s: Signals): Heuristic {
     why.push("导流模板：短中文回复 + @mention + (emoji|性暗示)");
   }
 
+  const botanyBait = botanyBaitMatch(s);
+  if (botanyBait) {
+    score += 0.4;
+    why.push("导流模板：植物拉丁名短回复 + 高风险昵称");
+  }
+
+  const promoNameEmojiReply = promoNameEmojiReplyMatch(s);
+  if (promoNameEmojiReply) {
+    score += 0.45;
+    why.push("导流模板：高风险昵称 + 极短 emoji 回复");
+  }
+
+  const explicitPromoName = explicitPromoDisplayName(s);
+  if (explicitPromoName) {
+    score += 0.45;
+    why.push("明确招嫖/导流昵称");
+  }
+
+  const profileEmojiCount = emojiCount(`${s.displayName} ${s.bio}`);
+  if (profileEmojiCount >= 4) {
+    score += 0.15;
+    why.push("昵称/简介含大量 emoji 装饰");
+  }
+
   if (s.hasDefaultAvatar) {
     score += 0.35;
     why.push("默认头像");
@@ -536,7 +597,13 @@ export function heuristic(s: Signals): Heuristic {
     } else if (s.accountAgeDays < 90) {
       score += 0.25;
       why.push("较新账号(<90天)");
-    } else if (s.accountAgeDays > 730 && !shapeMatch) {
+    } else if (
+      s.accountAgeDays > 730 &&
+      !shapeMatch &&
+      !botanyBait &&
+      !promoNameEmojiReply &&
+      !explicitPromoName
+    ) {
       score -= 0.25;
       why.push("老账号(>2年)");
     }
@@ -561,3 +628,4 @@ export function heuristic(s: Signals): Heuristic {
 }
 
 export const AUTO_THRESHOLD = 0.5;
+export const AUTO_HIDE_THRESHOLD = 0.8;

@@ -1,7 +1,14 @@
 import { addBlocked, isBlockedSync, warm as warmBlocklist } from "../lib/blocklist";
 import { BRAND } from "../lib/brand";
-import { type Cached, cacheGet, signalsHash } from "../lib/cache";
-import { extractFromArticle, extractProfile, extractThreadTopic } from "../lib/detect";
+import { type Cached, cacheGet, cacheSet, signalsHash } from "../lib/cache";
+import {
+  AUTO_HIDE_THRESHOLD,
+  AUTO_THRESHOLD,
+  extractFromArticle,
+  extractProfile,
+  extractThreadTopic,
+  heuristic,
+} from "../lib/detect";
 import { type IndexEntry, lookupLocal, warmLocalIndex } from "../lib/local-index";
 import { type ActionMode, getSettings, onSettingsChange } from "../lib/settings";
 import { bumpStat } from "../lib/stats";
@@ -84,6 +91,14 @@ function clearMounts(anchor: HTMLElement) {
 
 // ---- 5-second preview undo queue (PENDING_MS) ----
 const PENDING_MS = 5000;
+const LEARN_KEY = "mxga:learned-spam-patterns:v1";
+const MAX_LEARNED_PATTERNS = 160;
+
+interface LearnedPattern {
+  token: string;
+  hits: number;
+  ts: number;
+}
 
 interface PendingAction {
   key: string;
@@ -91,6 +106,50 @@ interface PendingAction {
   anchor: HTMLElement;
   timer: ReturnType<typeof setTimeout>;
   ts: number;
+}
+
+function normalizeLearnText(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/@[a-z0-9_]{1,15}/gi, " ")
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}]/gu, " ")
+    .replace(/[^\p{Script=Han}a-z0-9]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function learnedTokenExplicit(token: string): boolean {
+  return /(约|炮|涩|湿|处|骚|sao|主页|入口|通道|福利|资源|免费|同城|附近|找|友)/i.test(
+    token,
+  );
+}
+
+function lowContentBaitReply(s: Signals): boolean {
+  const t = (s.triggeringComment || s.recentTweets[0] || "").trim();
+  if (!t) return true;
+  if (t.length <= 100 && /@[A-Za-z0-9_]{2,15}/.test(t)) return true;
+  if (t.length <= 40 && /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(t)) return true;
+  if (t.length <= 80 && /[~～\]\[{}()（）·。!！?？、,，/\\|]/.test(t)) return true;
+  return false;
+}
+
+function extractLearnTokens(sig: Signals): string[] {
+  const source = normalizeLearnText(
+    `${sig.displayName} ${sig.bio} ${sig.triggeringComment ?? ""} ${sig.recentTweets[0] ?? ""}`,
+  );
+  const tokens = new Set<string>();
+  for (const part of source.split(" ")) {
+    if (part.length < 2 || part.length > 14) continue;
+    if (!learnedTokenExplicit(part)) continue;
+    tokens.add(part.slice(0, 12));
+
+    for (const m of part.matchAll(/[^\s]*(?:约|炮|涩|湿|处|骚|sao|主页|入口|通道|免费|找)[^\s]*/gi)) {
+      const token = m[0]?.slice(0, 12);
+      if (token && token.length >= 2) tokens.add(token);
+    }
+  }
+  return [...tokens].slice(0, 12);
 }
 
 export default defineContentScript({
@@ -105,6 +164,7 @@ export default defineContentScript({
     const pendingActions = new Map<string, PendingAction>();
     const inFlight = new Set<string>(); // keys currently in process()
     const hitPublicSeen = new Set<string>(); // hitPublic stat: once per account
+    let learnedPatterns = new Map<string, LearnedPattern>();
 
     let settings = await getSettings();
     if (!settings.enabled) return; // master off → don't init (applies next load)
@@ -115,8 +175,72 @@ export default defineContentScript({
     // Warm local data structures
     await warmBlocklist();
     await warmLocalIndex();
+    await warmLearnedPatterns();
 
     const keyOf = (s: Signals) => s.userId || `h:${s.handle}`;
+
+    async function warmLearnedPatterns() {
+      try {
+        const got = await chrome.storage.local.get(LEARN_KEY);
+        const rows = Array.isArray(got[LEARN_KEY])
+          ? (got[LEARN_KEY] as LearnedPattern[])
+          : [];
+        learnedPatterns = new Map(
+          rows
+            .filter((p) => p?.token && Number.isFinite(p.hits))
+            .map((p) => [p.token, { token: p.token, hits: Math.max(1, p.hits), ts: p.ts || 0 }]),
+        );
+      } catch {
+        learnedPatterns = new Map();
+      }
+    }
+
+    async function saveLearnedPatterns() {
+      const rows = [...learnedPatterns.values()]
+        .sort((a, b) => b.hits - a.hits || b.ts - a.ts)
+        .slice(0, MAX_LEARNED_PATTERNS);
+      learnedPatterns = new Map(rows.map((p) => [p.token, p]));
+      try {
+        await chrome.storage.local.set({ [LEARN_KEY]: rows });
+      } catch {
+        /* non-fatal */
+      }
+    }
+
+    function learnedVerdict(sig: Signals): Verdict | null {
+      if (!learnedPatterns.size) return null;
+      const hay = normalizeLearnText(
+        `${sig.displayName} ${sig.bio} ${sig.triggeringComment ?? ""} ${sig.recentTweets[0] ?? ""}`,
+      );
+      const bait = lowContentBaitReply(sig);
+      for (const pattern of learnedPatterns.values()) {
+        if (!hay.includes(pattern.token)) continue;
+        const strong = learnedTokenExplicit(pattern.token);
+        if (!strong && pattern.hits < 2) continue;
+        if (!bait && pattern.hits < 2) continue;
+        return {
+          label: "likely_spam",
+          confidence: Math.min(0.97, 0.82 + Math.min(0.12, pattern.hits * 0.03)),
+          reasons: [`本地学习命中：${pattern.token}`],
+        };
+      }
+      return null;
+    }
+
+    function learnFromSignals(sig: Signals) {
+      const tokens = extractLearnTokens(sig);
+      if (!tokens.length) return;
+      const ts = Date.now();
+      for (const token of tokens) {
+        const prev = learnedPatterns.get(token);
+        learnedPatterns.set(token, {
+          token,
+          hits: Math.min(99, (prev?.hits ?? 0) + 1),
+          ts,
+        });
+      }
+      void saveLearnedPatterns();
+    }
 
     /** Schedule a hide action with a 5-second undo window. */
     function scheduleHide(key: string, sig: Signals, anchor: HTMLElement) {
@@ -149,6 +273,7 @@ export default defineContentScript({
      *  via the user's own session (best-effort, paced). */
     function executeHide(key: string, sig: Signals) {
       const mode = settings.actionMode;
+      learnFromSignals(sig);
       void addBlocked(key);
       if (sig.userId) void addBlocked(sig.userId);
       void addBlockRecord({
@@ -245,6 +370,31 @@ export default defineContentScript({
       }
     }
 
+    function renderHeuristic(
+      anchor: HTMLElement,
+      key: string,
+      sig: Signals,
+      h: ReturnType<typeof heuristic>,
+    ) {
+      const verdict: Verdict = {
+        label: "likely_spam",
+        confidence: Math.min(0.95, Math.max(AUTO_THRESHOLD, h.score)),
+        reasons: h.why.length ? h.why : ["本地启发式规则命中"],
+      };
+      badgeFor(anchor, key, sig, verdict, "本地规则命中，未在公共名单", "fresh");
+      pushFinding(sig, verdict, "local-heuristic");
+      void cacheSet(key, {
+        verdict,
+        signalsHash: signalsHash(sig),
+        model: "local-heuristic-v1",
+        ts: Date.now(),
+        handle: sig.handle,
+        ...(sig.displayName ? { displayName: sig.displayName } : {}),
+        ...(sig.avatarUrl ? { avatarUrl: sig.avatarUrl } : {}),
+      });
+      void bumpStats({ label: verdict.label });
+    }
+
     async function process(sig: Signals, anchor: HTMLElement) {
       const key = keyOf(sig);
       if (inFlight.has(key)) return; // a concurrent scan is already on it
@@ -280,7 +430,33 @@ export default defineContentScript({
           return;
         }
 
-        // 4. Local public list did not match. Just show neutral/unhit state.
+        // 4. Public list did not match. Run the local heuristic as a cheap
+        //    fallback so fresh bot templates do not stay stuck as "检查".
+        const h = heuristic(sig);
+        if (h.score >= AUTO_THRESHOLD) {
+          renderHeuristic(anchor, key, sig, h);
+          if (h.score >= AUTO_HIDE_THRESHOLD) scheduleHide(key, sig, anchor);
+          return;
+        }
+
+        const learned = learnedVerdict(sig);
+        if (learned) {
+          badgeFor(anchor, key, sig, learned, "本地学习规则命中", "fresh");
+          pushFinding(sig, learned, "local-learning");
+          void cacheSet(key, {
+            verdict: learned,
+            signalsHash: signalsHash(sig),
+            model: "local-learning-v1",
+            ts: Date.now(),
+            handle: sig.handle,
+            ...(sig.displayName ? { displayName: sig.displayName } : {}),
+            ...(sig.avatarUrl ? { avatarUrl: sig.avatarUrl } : {}),
+          });
+          scheduleHide(key, sig, anchor);
+          return;
+        }
+
+        // 5. No local signal matched. Just show neutral/unhit state.
         badgeFor(anchor, key, sig, null);
       } finally {
         inFlight.delete(key);
